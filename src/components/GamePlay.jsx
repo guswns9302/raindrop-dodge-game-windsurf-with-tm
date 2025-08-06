@@ -1,0 +1,446 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import GameCanvas from './GameCanvas';
+import GameUI from './GameUI';
+import GameOverModal from './GameOverModal';
+import { GamePlayWrapper, CanvasContainer, UIOverlay } from './styled/Wrapper';
+
+const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
+
+  
+  const [gameState, setGameState] = useState({
+    phase: 'playing',
+    playerName: playerName,
+    score: 0,
+    isGameOver: false,
+    isPaused: false,
+    difficulty: 1,
+    raindropCount: 0,
+    survivedTime: 0 // 생존 시간 (초 단위)
+  });
+  
+  // 충돌 이펙트 상태
+  const [collisionEffect, setCollisionEffect] = useState({
+    active: false,
+    x: 0,
+    y: 0,
+    particles: []
+  });
+  
+  // 게임 오버 모달 상태
+  const [showGameOverModal, setShowGameOverModal] = useState(false);
+  
+  const [player, setPlayer] = useState({
+    x: window.innerWidth / 2,
+    y: window.innerHeight / 2,
+    size: 30,
+    speed: 50, // 풀스크린에 맞게 속도 증가
+    color: '#4CAF50',
+    width: 30,
+    height: 30,
+    isMoving: false,
+    lastDirection: null
+  });
+
+
+  const [raindrops, setRaindrops] = useState([]);
+  const gameLoopRef = useRef();
+  const lastRaindropTime = useRef(0);
+  const canvasRef = useRef(null); // Canvas ref 추가
+
+  
+  // 파티클 생성 함수
+  const createParticles = (x, y) => {
+    const particles = [];
+    for (let i = 0; i < 15; i++) {
+      particles.push({
+        id: Math.random(),
+        x: x,
+        y: y,
+        vx: (Math.random() - 0.5) * 10, // 랜덤 x 속도
+        vy: (Math.random() - 0.5) * 10, // 랜덤 y 속도
+        life: 1.0, // 생명력 (1.0에서 0.0으로 감소)
+        size: Math.random() * 8 + 4, // 랜덤 크기
+        color: `hsl(${Math.random() * 60 + 15}, 100%, 60%)` // 주황/빨강 계열
+      });
+    }
+    return particles;
+  };
+  
+  // 충돌 이펙트 시작 함수
+  const startCollisionEffect = (playerX, playerY) => {
+    const particles = createParticles(playerX + 20, playerY + 20); // 플레이어 중심
+    
+    setCollisionEffect({
+      active: true,
+      x: playerX,
+      y: playerY,
+      particles: particles
+    });
+    
+    // 이펙트 자동 종료 (2초 후)
+    setTimeout(() => {
+      setCollisionEffect(prev => ({ ...prev, active: false, particles: [] }));
+    }, 2000);
+  };
+
+  // 초공격적 충돌 감지 함수 (겨우만 접촉해도 충돌)
+  const checkCollision = (player, drop) => {
+    // 플레이어와 물방울의 중심점 계산
+    const playerCenterX = player.x + player.width / 2;
+    const playerCenterY = player.y + player.height / 2;
+    const dropCenterX = drop.x + (drop.size || 15) / 2;
+    const dropCenterY = drop.y + (drop.size || 15) / 2;
+    
+    // 두 원의 중심점 간 거리 계산
+    const deltaX = playerCenterX - dropCenterX;
+    const deltaY = playerCenterY - dropCenterY;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+    
+    // 초공격적 충돌 감지 (반지름 합의 150%)
+    const playerRadius = player.width / 2;
+    const dropRadius = (drop.size || 15) / 2;
+    const aggressiveMultiplier = 1.5; // 150% 범위로 충돌 감지
+    const radiusSum = (playerRadius + dropRadius) * aggressiveMultiplier;
+    
+    // 충돌 감지
+    const isColliding = distance <= radiusSum;
+    
+    // 충돌 시에만 로그 출력
+    if (isColliding) {
+      console.log('[GamePlay] 💥 충돌 감지!', {
+        distance: distance.toFixed(1),
+        threshold: radiusSum.toFixed(1)
+      });
+    }
+    
+    return isColliding;
+  };
+
+  // 충돌 감지 및 게임 오버 처리
+  const handleCollisions = () => {
+    for (let i = 0; i < raindrops.length; i++) {
+      const drop = raindrops[i];
+      if (checkCollision(player, drop)) {
+        // 충돌 이팩트 시작
+        startCollisionEffect(player.x, player.y);
+        
+        // 게임 종료 처리
+        const finalScore = gameState.score;
+        
+        setGameState(prev => ({
+          ...prev,
+          isGameOver: true,
+          phase: 'ended'
+        }));
+        
+        // 충돌 이펙트 후 모달 표시 (즉시 페이지 전환하지 않음)
+        setTimeout(() => {
+          setShowGameOverModal(true);
+        }, 100); // 상태 업데이트 후 모달 표시
+        
+        return true; // 충돌 발생
+      }
+    }
+    return false; // 충돌 없음
+  };
+
+  // 플레이어 이동 핸들러 - 부드러운 보간 이동
+  const handlePlayerMove = useCallback((newX, newY) => {
+    setPlayer(prev => {
+      // 풀스크린 경계 체크
+      const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
+      const targetX = Math.max(0, Math.min(screenWidth - prev.width, newX));
+      const targetY = Math.max(0, Math.min(screenHeight - prev.height, newY));
+      
+      // 부드러운 이동을 위한 보간 (lerp) 적용
+      const lerpFactor = 0.35; // 보간 강도 증가 (빠른 이동)
+      const smoothX = prev.x + (targetX - prev.x) * lerpFactor;
+      const smoothY = prev.y + (targetY - prev.y) * lerpFactor;
+      
+      // 이동 상태 확인 (더 민감하게)
+      const isMoving = Math.abs(targetX - prev.x) > 1 || Math.abs(targetY - prev.y) > 1;
+      
+      // 이동 방향 결정
+      let lastDirection = prev.lastDirection;
+      if (isMoving) {
+        const deltaX = targetX - prev.x;
+        const deltaY = targetY - prev.y;
+        
+        if (Math.abs(deltaX) > Math.abs(deltaY)) {
+          lastDirection = deltaX > 0 ? 'right' : 'left';
+        } else {
+          lastDirection = deltaY > 0 ? 'down' : 'up';
+        }
+      }
+      
+      return {
+        ...prev,
+        x: smoothX,
+        y: smoothY,
+        isMoving,
+        lastDirection
+      };
+    });
+  }, []);
+
+  // 충돌 이팩트 업데이트 함수
+  const updateCollisionEffect = useCallback((updatedEffect) => {
+    setCollisionEffect(updatedEffect);
+  }, []);
+
+  // 생존 시간 기반 공격적 물방울 속도 계산
+  const calculateRaindropSpeed = (survivedTime, difficulty) => {
+    const baseSpeed = 3; // 기본 속도
+    const timeMultiplier = Math.min(survivedTime * 0.3, 15); // 시간당 0.3씩 증가, 최대 +15
+    const difficultyBonus = difficulty * 0.8; // 난이도당 0.8씩 증가
+    const exponentialBonus = Math.pow(survivedTime / 10, 1.2) * 2; // 지수적 증가
+    const randomVariation = Math.random() * 2; // 0-2 랜덤 변화
+    
+    const finalSpeed = baseSpeed + timeMultiplier + difficultyBonus + exponentialBonus + randomVariation;
+    return Math.min(finalSpeed, 25); // 최대 속도 25로 제한
+  };
+
+  // 생존 시간 기반 물방울 크기 계산
+  const calculateRaindropSize = (survivedTime) => {
+    const baseSize = 15; // 기본 크기
+    const timeVariation = Math.sin(survivedTime * 0.5) * 5; // 사인 파동으로 변화
+    const randomSize = Math.random() * 15; // 0-15 랜덤 변화
+    const occasionalLarge = Math.random() < 0.1 ? Math.random() * 20 : 0; // 10% 확률로 큰 물방울
+    
+    const finalSize = baseSize + timeVariation + randomSize + occasionalLarge;
+    return Math.max(Math.min(finalSize, 40), 10); // 10-40px 범위
+  };
+
+  // 물방울 생성 함수
+  const createRaindrop = () => {
+    const screenWidth = window.innerWidth;
+    const newRaindrop = {
+      id: Date.now() + Math.random(),
+      x: Math.random() * (screenWidth - 40), // 풀스크린 너비에서 물방울 크기 빼고
+      y: -20,
+      size: calculateRaindropSize(gameState.survivedTime), // 생존 시간 기반 다양한 크기
+      speed: calculateRaindropSpeed(gameState.survivedTime, gameState.difficulty), // 생존 시간 기반 공격적 속도
+      color: `hsl(${200 + Math.random() * 60}, 70%, ${50 + Math.random() * 30}%)` // 파란색 계열
+    };
+    
+
+    
+    return newRaindrop;
+  };
+
+  // 물방울 위치 업데이트 함수 (점수 계산 포함)
+  const updateRaindrops = () => {
+    setRaindrops(prev => {
+      const screenBottom = window.innerHeight;
+      const updated = [];
+      let reachedBottomCount = 0;
+      
+      prev.forEach(drop => {
+        const newDrop = {
+          ...drop,
+          y: drop.y + drop.speed
+        };
+        
+        // 물방울이 바닥에 닿았는지 확인
+        if (newDrop.y >= screenBottom) {
+          reachedBottomCount++;
+          // 바닥에 닿은 물방울은 제거
+        } else {
+          // 아직 화면에 있는 물방울만 유지
+          updated.push(newDrop);
+        }
+      });
+      
+      // 바닥에 닿은 물방울이 있으면 점수 업데이트
+      if (reachedBottomCount > 0) {
+
+        setGameState(prevState => ({
+          ...prevState,
+          score: prevState.score + reachedBottomCount
+        }));
+      }
+      
+      return updated;
+    });
+  };
+
+  // 게임 루프
+  useEffect(() => {
+    if (gameState.isGameOver || gameState.isPaused) return;
+
+    const gameLoop = (currentTime) => {
+      // 생존 시간 기반 공격적 난이도 계산
+      const survivalTime = gameState.survivedTime;
+      const timeDifficulty = Math.min(Math.floor(survivalTime / 5) + 1, 20); // 5초마다 +1, 최대 20
+      
+      // 물방울 생성 간격 (더 많은 물방울을 위해 공격적 감소)
+      const baseInterval = 400; // 기본 간격 대폭 감소 (800 -> 400ms)
+      const difficultyReduction = timeDifficulty * 25; // 난이도당 25ms 감소
+      const exponentialReduction = Math.pow(timeDifficulty, 1.4) * 12; // 지수적 감소 강화
+      const densityBonus = Math.min(survivalTime * 2, 100); // 생존 시간당 추가 밀도
+      const raindropInterval = Math.max(baseInterval - difficultyReduction - exponentialReduction - densityBonus, 30); // 최소 30ms
+      
+      if (currentTime - lastRaindropTime.current > raindropInterval) {
+        // 난이도에 따라 한 번에 여러 물방울 생성
+        const spawnCount = Math.min(1 + Math.floor(timeDifficulty / 4), 4); // 난이도 4마다 +1개, 최대 4개
+        const newRaindrops = [];
+        
+        for (let i = 0; i < spawnCount; i++) {
+          newRaindrops.push(createRaindrop());
+        }
+        
+        setRaindrops(prev => [...prev, ...newRaindrops]);
+        lastRaindropTime.current = currentTime;
+        
+        // 게임 상태 업데이트
+        setGameState(prevState => ({
+          ...prevState,
+          raindropCount: prevState.raindropCount + spawnCount,
+          difficulty: timeDifficulty
+        }));
+        
+
+      }
+      
+      // 물방울 위치 업데이트
+      updateRaindrops();
+      
+      // 충돌 감지
+      if (!gameState.isGameOver) {
+        handleCollisions();
+      }
+      
+      gameLoopRef.current = requestAnimationFrame(gameLoop);
+    };
+
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+    };
+  }, [gameState.isGameOver, gameState.isPaused, gameState.difficulty, gameState.raindropCount]);
+
+  // 게임 시작 조건 확인 및 초기 상태 설정
+  useEffect(() => {
+    if (gameState.phase === 'playing' && !gameState.isGameOver && !gameState.isPaused) {
+      // 초기 상태 설정 (필요시)
+      if (gameState.score !== 0 || gameState.survivedTime !== 0) {
+        setGameState(prev => ({
+          ...prev,
+          score: 0,
+          survivedTime: 0,
+          raindropCount: 0,
+          difficulty: 1
+        }));
+      }
+    }
+  }, [gameState.phase, gameState.isGameOver]);
+
+  // 생존 시간 추적 시스템 (무제한 게임)
+  useEffect(() => {
+    if (gameState.isGameOver || gameState.isPaused || gameState.phase !== 'playing') {
+      return;
+    }
+
+    const survivalTimer = setInterval(() => {
+      setGameState(prev => {
+        const newSurvivedTime = prev.survivedTime + 1;
+        
+
+        
+        return { 
+          ...prev,
+          survivedTime: newSurvivedTime
+        };
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(survivalTimer);
+    };
+  }, [gameState.isGameOver, gameState.isPaused, gameState.phase, gameState.difficulty]);
+  
+  // 모달 핸들러 함수들
+  const handleModalRestart = () => {
+
+    setShowGameOverModal(false);
+    
+    // 게임 상태 초기화
+    setGameState({
+      phase: 'playing',
+      playerName: playerName,
+      score: 0,
+      isGameOver: false,
+      isPaused: false,
+      difficulty: 1,
+      raindropCount: 0,
+      survivedTime: 0
+    });
+    
+    // 플레이어 위치 초기화 - 풀스크린 중앙
+    setPlayer(prev => ({
+      ...prev,
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+      isMoving: false,
+      lastDirection: null
+    }));
+    
+    // 물방울 초기화
+    setRaindrops([]);
+    
+    // 충돌 이펙트 초기화
+    setCollisionEffect({
+      active: false,
+      x: 0,
+      y: 0,
+      particles: []
+    });
+  };
+  
+  const handleModalBackToStart = () => {
+
+    setShowGameOverModal(false);
+    onBackToStart(); // 시작 화면으로 직접 전환
+  };
+
+  return (
+    <GamePlayWrapper>
+      <CanvasContainer>
+        <GameCanvas
+          canvasRef={canvasRef}
+          gameState={gameState}
+          player={player}
+          raindrops={raindrops}
+          onPlayerMove={handlePlayerMove}
+          collisionEffect={collisionEffect}
+          onCollisionEffectUpdate={updateCollisionEffect}
+          width={window.innerWidth}
+          height={window.innerHeight}
+        />
+        <UIOverlay>
+          <GameUI 
+            playerName={playerName}
+            survivedTime={gameState.survivedTime}
+            score={gameState.score}
+          />
+        </UIOverlay>
+      </CanvasContainer>
+      
+      {/* 게임 오버 모달 */}
+      <GameOverModal
+        isVisible={showGameOverModal}
+        playerName={gameState.playerName}
+        score={gameState.score}
+        survivedTime={gameState.survivedTime}
+        onRestart={handleModalRestart}
+        onBackToStart={handleModalBackToStart}
+      />
+    </GamePlayWrapper>
+  );
+};
+
+export default GamePlay;

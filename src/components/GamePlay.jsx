@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import GameCanvas from './GameCanvas';
 import GameUI from './GameUI';
 import GameOverModal from './GameOverModal';
 import { GamePlayWrapper, CanvasContainer, UIOverlay } from './styled/Wrapper';
+import RaindropPool from '../utils/RaindropPool';
 
 const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
 
@@ -46,10 +47,40 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
   const gameLoopRef = useRef();
   const lastRaindropTime = useRef(0);
   const canvasRef = useRef(null); // Canvas ref 추가
+  
+  // Object Pooling을 위한 RaindropPool 인스턴스 (성능 최적화)
+  const raindropPoolRef = useRef(new RaindropPool(150)); // 150개 초기 풀 크기
+
+  // 게임 설정 계산 메모이제이션 (성능 최적화)
+  const gameConfig = useMemo(() => {
+    const survivalTime = gameState.survivedTime;
+    const timeDifficulty = Math.min(Math.floor(survivalTime / 5) + 1, 20);
+    
+    // 물방울 생성 간격 계산
+    const baseInterval = 400;
+    const difficultyReduction = timeDifficulty * 25;
+    const exponentialReduction = Math.pow(timeDifficulty, 1.4) * 12;
+    const spawnInterval = Math.max(baseInterval - difficultyReduction - exponentialReduction, 50);
+    
+    // 동시 생성 물방울 개수
+    const spawnCount = Math.min(1 + Math.floor(timeDifficulty / 4), 4);
+    
+    return {
+      timeDifficulty,
+      spawnInterval,
+      spawnCount,
+      survivalTime
+    };
+  }, [gameState.survivedTime]);
+
+  // 활성 물방울 필터링 메모이제이션
+  const activeRaindrops = useMemo(() => {
+    return raindrops.filter(drop => drop.y < window.innerHeight + 50);
+  }, [raindrops]);
 
   
-  // 파티클 생성 함수
-  const createParticles = (x, y) => {
+  // 파티클 생성 함수 (useCallback으로 최적화)
+  const createParticles = useCallback((x, y) => {
     const particles = [];
     for (let i = 0; i < 15; i++) {
       particles.push({
@@ -64,10 +95,10 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
       });
     }
     return particles;
-  };
+  }, []);
   
-  // 충돌 이펙트 시작 함수
-  const startCollisionEffect = (playerX, playerY) => {
+  // 충돌 이펙트 시작 함수 (useCallback으로 최적화)
+  const startCollisionEffect = useCallback((playerX, playerY) => {
     const particles = createParticles(playerX + 20, playerY + 20); // 플레이어 중심
     
     setCollisionEffect({
@@ -81,10 +112,10 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
     setTimeout(() => {
       setCollisionEffect(prev => ({ ...prev, active: false, particles: [] }));
     }, 2000);
-  };
+  }, [createParticles]);
 
-  // 초공격적 충돌 감지 함수 (겨우만 접촉해도 충돌)
-  const checkCollision = (player, drop) => {
+  // 초공격적 충돌 감지 함수 (useCallback으로 최적화)
+  const checkCollision = useCallback((player, drop) => {
     // 플레이어와 물방울의 중심점 계산
     const playerCenterX = player.x + player.width / 2;
     const playerCenterY = player.y + player.height / 2;
@@ -114,12 +145,12 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
     }
     
     return isColliding;
-  };
+  }, []);
 
-  // 충돌 감지 및 게임 오버 처리
-  const handleCollisions = () => {
-    for (let i = 0; i < raindrops.length; i++) {
-      const drop = raindrops[i];
+  // 충돌 감지 및 게임 오버 처리 (useCallback으로 최적화)
+  const handleCollisions = useCallback(() => {
+    for (let i = 0; i < activeRaindrops.length; i++) {
+      const drop = activeRaindrops[i];
       if (checkCollision(player, drop)) {
         // 충돌 이팩트 시작
         startCollisionEffect(player.x, player.y);
@@ -142,7 +173,7 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
       }
     }
     return false; // 충돌 없음
-  };
+  }, [activeRaindrops, player, checkCollision, startCollisionEffect, gameState.score]);
 
   // 플레이어 이동 핸들러 - 부드러운 보간 이동
   const handlePlayerMove = useCallback((newX, newY) => {
@@ -212,85 +243,72 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
     return Math.max(Math.min(finalSize, 40), 10); // 10-40px 범위
   };
 
-  // 물방울 생성 함수
-  const createRaindrop = () => {
+  // 물방울 생성 함수 (Object Pooling 적용)
+  const createRaindrop = useCallback(() => {
     const screenWidth = window.innerWidth;
-    const newRaindrop = {
-      id: Date.now() + Math.random(),
-      x: Math.random() * (screenWidth - 40), // 풀스크린 너비에서 물방울 크기 빼고
-      y: -20,
-      size: calculateRaindropSize(gameState.survivedTime), // 생존 시간 기반 다양한 크기
-      speed: calculateRaindropSpeed(gameState.survivedTime, gameState.difficulty), // 생존 시간 기반 공격적 속도
-      color: `hsl(${200 + Math.random() * 60}, 70%, ${50 + Math.random() * 30}%)` // 파란색 계열
-    };
+    const x = Math.random() * (screenWidth - 40);
+    const y = -20;
+    const size = calculateRaindropSize(gameState.survivedTime);
+    const speed = calculateRaindropSpeed(gameState.survivedTime, gameState.difficulty);
+    const color = `hsl(${200 + Math.random() * 60}, 70%, ${50 + Math.random() * 30}%)`;
     
-
+    // Object Pool에서 물방울 가져오기
+    const pooledRaindrop = raindropPoolRef.current.getDroplet(x, y, size, speed, color);
     
-    return newRaindrop;
-  };
+    return pooledRaindrop;
+  }, [gameState.survivedTime, gameState.difficulty]);
 
-  // 물방울 위치 업데이트 함수 (점수 계산 포함)
-  const updateRaindrops = () => {
-    setRaindrops(prev => {
-      const screenBottom = window.innerHeight;
-      const updated = [];
-      let reachedBottomCount = 0;
+  // 물방울 위치 업데이트 함수 (Object Pooling 적용)
+  const updateRaindrops = useCallback(() => {
+    const screenBottom = window.innerHeight;
+    let reachedBottomCount = 0;
+    
+    // Object Pool의 filterAndRelease 메서드 사용
+    const activeDrops = raindropPoolRef.current.filterAndRelease(drop => {
+      // 물방울 위치 업데이트
+      drop.y += drop.speed;
       
-      prev.forEach(drop => {
-        const newDrop = {
-          ...drop,
-          y: drop.y + drop.speed
-        };
-        
-        // 물방울이 바닥에 닿았는지 확인
-        if (newDrop.y >= screenBottom) {
-          reachedBottomCount++;
-          // 바닥에 닿은 물방울은 제거
-        } else {
-          // 아직 화면에 있는 물방울만 유지
-          updated.push(newDrop);
-        }
-      });
-      
-      // 바닥에 닿은 물방울이 있으면 점수 업데이트
-      if (reachedBottomCount > 0) {
-
-        setGameState(prevState => ({
-          ...prevState,
-          score: prevState.score + reachedBottomCount
-        }));
+      // 바닥에 닿았는지 확인
+      if (drop.y >= screenBottom) {
+        reachedBottomCount++;
+        return false; // 풀로 반환
       }
       
-      return updated;
+      return true; // 계속 유지
     });
-  };
+    
+    // 바닥에 닿은 물방울이 있으면 점수 업데이트
+    if (reachedBottomCount > 0) {
+      setGameState(prevState => ({
+        ...prevState,
+        score: prevState.score + reachedBottomCount
+      }));
+    }
+    
+    // React 상태 업데이트
+    setRaindrops(activeDrops);
+  }, []);
 
   // 게임 루프
   useEffect(() => {
     if (gameState.isGameOver || gameState.isPaused) return;
 
     const gameLoop = (currentTime) => {
-      // 생존 시간 기반 공격적 난이도 계산
-      const survivalTime = gameState.survivedTime;
-      const timeDifficulty = Math.min(Math.floor(survivalTime / 5) + 1, 20); // 5초마다 +1, 최대 20
+      // 메모이제이션된 게임 설정 사용 (성능 최적화)
+      const { timeDifficulty, spawnInterval, spawnCount } = gameConfig;
       
-      // 물방울 생성 간격 (더 많은 물방울을 위해 공격적 감소)
-      const baseInterval = 400; // 기본 간격 대폭 감소 (800 -> 400ms)
-      const difficultyReduction = timeDifficulty * 25; // 난이도당 25ms 감소
-      const exponentialReduction = Math.pow(timeDifficulty, 1.4) * 12; // 지수적 감소 강화
-      const densityBonus = Math.min(survivalTime * 2, 100); // 생존 시간당 추가 밀도
-      const raindropInterval = Math.max(baseInterval - difficultyReduction - exponentialReduction - densityBonus, 30); // 최소 30ms
+      // 추가 밀도 보너스 계산
+      const densityBonus = Math.min(gameConfig.survivalTime * 2, 100);
+      const finalInterval = Math.max(spawnInterval - densityBonus, 30);
       
-      if (currentTime - lastRaindropTime.current > raindropInterval) {
-        // 난이도에 따라 한 번에 여러 물방울 생성
-        const spawnCount = Math.min(1 + Math.floor(timeDifficulty / 4), 4); // 난이도 4마다 +1개, 최대 4개
-        const newRaindrops = [];
-        
+      if (currentTime - lastRaindropTime.current > finalInterval) {
+        // Object Pooling을 사용한 물방울 생성
         for (let i = 0; i < spawnCount; i++) {
-          newRaindrops.push(createRaindrop());
+          createRaindrop(); // 이미 Pool에 추가됨
         }
         
-        setRaindrops(prev => [...prev, ...newRaindrops]);
+        // Pool에서 활성 물방울 가져오기
+        setRaindrops(raindropPoolRef.current.getActiveDroplets());
         lastRaindropTime.current = currentTime;
         
         // 게임 상태 업데이트
@@ -321,7 +339,7 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
         cancelAnimationFrame(gameLoopRef.current);
       }
     };
-  }, [gameState.isGameOver, gameState.isPaused, gameState.difficulty, gameState.raindropCount]);
+  }, [gameState.isGameOver, gameState.isPaused, gameConfig, handleCollisions]);
 
   // 게임 시작 조건 확인 및 초기 상태 설정
   useEffect(() => {
@@ -389,7 +407,8 @@ const GamePlay = ({ playerName, onGameEnd, onBackToStart }) => {
       lastDirection: null
     }));
     
-    // 물방울 초기화
+    // Object Pool 정리 및 물방울 초기화
+    raindropPoolRef.current.cleanup();
     setRaindrops([]);
     
     // 충돌 이펙트 초기화

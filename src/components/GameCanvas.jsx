@@ -15,6 +15,10 @@ const GameCanvas = ({
   const canvasRef = externalCanvasRef || useRef(null);
   const animationIdRef = useRef(null);
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
+  
+  // 더블 버퍼링을 위한 오프스크린 캔버스 (성능 최적화)
+  const offscreenCanvasRef = useRef(null);
+  const offscreenCtxRef = useRef(null);
 
   // Canvas 초기 설정 및 속성 설정
   useEffect(() => {
@@ -44,11 +48,25 @@ const GameCanvas = ({
     
     console.log('[GameCanvas] ✅ 2D 컨텍스트 초기화 완료');
     
+    // 더블 버퍼링을 위한 오프스크린 캔버스 생성 (성능 최적화)
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = CANVAS_WIDTH;
+    offscreenCanvas.height = CANVAS_HEIGHT;
+    const offscreenCtx = offscreenCanvas.getContext('2d');
+    
+    if (offscreenCtx) {
+      offscreenCanvasRef.current = offscreenCanvas;
+      offscreenCtxRef.current = offscreenCtx;
+      console.log('[GameCanvas] ✅ 오프스크린 캔버스 초기화 완료 (더블 버퍼링)');
+    } else {
+      console.warn('[GameCanvas] ⚠️ 오프스크린 캔버스 생성 실패, 일반 렌더링 사용');
+    }
+    
     // Canvas 스타일 설정
     canvas.style.imageRendering = 'pixelated'; // 픽셀 아트 스타일
     canvas.style.cursor = 'none'; // 마우스 커서 숨김
     
-    // 화면 크기 변경 시 캔버스 크기 재조정
+    // 화면 크기 변경 시 캔버스 크기 재조정 (더블 버퍼링 포함)
     const handleResize = () => {
       const newWidth = window.innerWidth;
       const newHeight = window.innerHeight;
@@ -56,7 +74,13 @@ const GameCanvas = ({
       canvas.width = newWidth;
       canvas.height = newHeight;
       
-      console.log(`[GameCanvas] 🔄 화면 크기 변경: ${newWidth}x${newHeight}`);
+      // 오프스크린 캔버스도 크기 업데이트
+      if (offscreenCanvasRef.current) {
+        offscreenCanvasRef.current.width = newWidth;
+        offscreenCanvasRef.current.height = newHeight;
+      }
+      
+      console.log(`[GameCanvas] 🔄 화면 크기 변경 (더블 버퍼링 포함): ${newWidth}x${newHeight}`);
     };
     
     window.addEventListener('resize', handleResize);
@@ -91,119 +115,123 @@ const GameCanvas = ({
     return ctx;
   }, []);
 
-  // 렌더링 함수
+  // 렌더링 함수 (더블 버퍼링 적용)
   const render = useCallback((ctx) => {
     if (!ctx) return;
     
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // 더블 버퍼링: 오프스크린 캔버스에 먼저 렌더링
+    const renderCtx = offscreenCtxRef.current || ctx;
+    const renderCanvas = offscreenCanvasRef.current || canvas;
+
     // Canvas 클리어
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    renderCtx.clearRect(0, 0, renderCanvas.width, renderCanvas.height);
     
-    // 배경 그리기 (그라데이션 하늘)
-    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    // 배경 그리기 (그라데이션 하늘) - 오프스크린 캔버스에 렌더링
+    const gradient = renderCtx.createLinearGradient(0, 0, 0, renderCanvas.height);
     gradient.addColorStop(0, '#87CEEB'); // 하늘색
     gradient.addColorStop(1, '#E0F6FF'); // 연한 하늘색
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    renderCtx.fillStyle = gradient;
+    renderCtx.fillRect(0, 0, renderCanvas.width, renderCanvas.height);
     
     // 플레이어 그리기 (향상된 비주얼 효과)
     const playerCenterX = player.x + player.width / 2;
     const playerCenterY = player.y + player.height / 2;
     
-    // 플레이어 그림자
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-    ctx.beginPath();
-    ctx.roundRect(player.x + 3, player.y + 3, player.width, player.height, 8);
-    ctx.fill();
+    // 플레이어 그림자 - 오프스크린 캔버스에 렌더링
+    renderCtx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+    renderCtx.beginPath();
+    renderCtx.roundRect(player.x + 3, player.y + 3, player.width, player.height, 8);
+    renderCtx.fill();
     
-    // 플레이어 메인 모양 (그라데이션)
-    const playerGradient = ctx.createRadialGradient(
+    // 플레이어 메인 모양 (그라데이션) - 오프스크린 캔버스에 렌더링
+    const playerGradient = renderCtx.createRadialGradient(
       playerCenterX - 5, playerCenterY - 5, 0,
       playerCenterX, playerCenterY, player.width / 2
     );
     playerGradient.addColorStop(0, player.color || '#FF6B6B');
     playerGradient.addColorStop(1, player.borderColor || '#FF4757');
     
-    ctx.fillStyle = playerGradient;
-    ctx.beginPath();
-    ctx.roundRect(player.x, player.y, player.width, player.height, 8);
-    ctx.fill();
+    renderCtx.fillStyle = playerGradient;
+    renderCtx.beginPath();
+    renderCtx.roundRect(player.x, player.y, player.width, player.height, 8);
+    renderCtx.fill();
     
-    // 플레이어 테두리
-    ctx.strokeStyle = player.borderColor || '#FF4757';
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    // 플레이어 테두리 - 오프스크린 캔버스에 렌더링
+    renderCtx.strokeStyle = player.borderColor || '#FF4757';
+    renderCtx.lineWidth = 2;
+    renderCtx.stroke();
     
-    // 플레이어 하이라이트
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.beginPath();
-    ctx.roundRect(player.x + 5, player.y + 5, player.width - 10, player.height / 3, 4);
-    ctx.fill();
+    // 플레이어 하이라이트 - 오프스크린 캔버스에 렌더링
+    renderCtx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+    renderCtx.beginPath();
+    renderCtx.roundRect(player.x + 5, player.y + 5, player.width - 10, player.height / 3, 4);
+    renderCtx.fill();
     
-    // 이동 상태 표시 (이동 중이면 반짝이는 효과)
+    // 이동 상태 표시 (이동 중이면 반짝이는 효과) - 오프스크린 캔버스에 렌더링
     if (player.isMoving) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(player.x - 2, player.y - 2, player.width + 4, player.height + 4);
-      ctx.setLineDash([]); // 대시 리셋
+      renderCtx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      renderCtx.lineWidth = 1;
+      renderCtx.setLineDash([5, 5]);
+      renderCtx.strokeRect(player.x - 2, player.y - 2, player.width + 4, player.height + 4);
+      renderCtx.setLineDash([]); // 대시 리셋
     }
     
-    // 물방울 그리기
+    // 물방울 그리기 - 오프스크린 캔버스에 렌더링
     raindrops.forEach((drop, index) => {
-      ctx.fillStyle = '#4ECDC4'; // 청록색
-      ctx.beginPath();
-      ctx.ellipse(drop.x + drop.width/2, drop.y + drop.height/2, 
+      renderCtx.fillStyle = '#4ECDC4'; // 청록색
+      renderCtx.beginPath();
+      renderCtx.ellipse(drop.x + drop.width/2, drop.y + drop.height/2, 
                   drop.width/2, drop.height/2, 0, 0, 2 * Math.PI);
-      ctx.fill();
+      renderCtx.fill();
       
-      // 물방울 하이라이트
-      ctx.fillStyle = '#A8E6CF';
-      ctx.beginPath();
-      ctx.ellipse(drop.x + drop.width/3, drop.y + drop.height/3, 
+      // 물방울 하이라이트 - 오프스크린 캔버스에 렌더링
+      renderCtx.fillStyle = '#A8E6CF';
+      renderCtx.beginPath();
+      renderCtx.ellipse(drop.x + drop.width/3, drop.y + drop.height/3, 
                   drop.width/6, drop.height/6, 0, 0, 2 * Math.PI);
-      ctx.fill();
+      renderCtx.fill();
     });
     
-    // 충돌 이펙트 파티클 렌더링
+    // 충돌 이펙트 파티클 렌더링 - 오프스크린 캔버스에 렌더링
     if (collisionEffect && collisionEffect.active && collisionEffect.particles.length > 0) {
       collisionEffect.particles.forEach(particle => {
         if (particle.life > 0) {
-          ctx.save();
+          renderCtx.save();
           
           // 파티클 투명도 설정 (생명력에 따라)
-          ctx.globalAlpha = particle.life;
+          renderCtx.globalAlpha = particle.life;
           
           // 파티클 색상 및 그리기
-          ctx.fillStyle = particle.color;
-          ctx.beginPath();
-          ctx.arc(particle.x, particle.y, particle.size * particle.life, 0, Math.PI * 2);
-          ctx.fill();
+          renderCtx.fillStyle = particle.color;
+          renderCtx.beginPath();
+          renderCtx.arc(particle.x, particle.y, particle.size * particle.life, 0, Math.PI * 2);
+          renderCtx.fill();
           
           // 파티클 글로우 효과
-          ctx.shadowColor = particle.color;
-          ctx.shadowBlur = 10;
-          ctx.fill();
+          renderCtx.shadowColor = particle.color;
+          renderCtx.shadowBlur = 10;
+          renderCtx.fill();
           
-          ctx.restore();
+          renderCtx.restore();
         }
       });
     }
     
-    // 충돌 시 화면 흔들림 효과
+    // 충돌 시 화면 흔들림 효과 - 오프스크린 캔버스에 렌더링
     if (collisionEffect && collisionEffect.active) {
       const shakeIntensity = 5;
       const shakeX = (Math.random() - 0.5) * shakeIntensity;
       const shakeY = (Math.random() - 0.5) * shakeIntensity;
       
-      ctx.save();
-      ctx.translate(shakeX, shakeY);
+      renderCtx.save();
+      renderCtx.translate(shakeX, shakeY);
       
       // 폭발 원형 효과
       const explosionRadius = 50;
-      const explosionGradient = ctx.createRadialGradient(
+      const explosionGradient = renderCtx.createRadialGradient(
         collisionEffect.x + 20, collisionEffect.y + 20, 0,
         collisionEffect.x + 20, collisionEffect.y + 20, explosionRadius
       );
@@ -211,12 +239,19 @@ const GameCanvas = ({
       explosionGradient.addColorStop(0.5, 'rgba(255, 200, 0, 0.4)');
       explosionGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
       
-      ctx.fillStyle = explosionGradient;
-      ctx.beginPath();
-      ctx.arc(collisionEffect.x + 20, collisionEffect.y + 20, explosionRadius, 0, Math.PI * 2);
-      ctx.fill();
+      renderCtx.fillStyle = explosionGradient;
+      renderCtx.beginPath();
+      renderCtx.arc(collisionEffect.x + 20, collisionEffect.y + 20, explosionRadius, 0, Math.PI * 2);
+      renderCtx.fill();
       
-      ctx.restore();
+      renderCtx.restore();
+    }
+    
+    // 더블 버퍼링: 오프스크린 캔버스를 메인 캔버스에 복사 (성능 최적화)
+    if (offscreenCanvasRef.current && offscreenCtxRef.current) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(offscreenCanvasRef.current, 0, 0);
+      console.log('[GameCanvas] 🚀 더블 버퍼링 렌더링 완료');
     }
   }, [player, raindrops, collisionEffect]);
   
